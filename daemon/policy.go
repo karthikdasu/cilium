@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/policy"
@@ -79,18 +80,23 @@ func (d *Daemon) triggerPolicyUpdates(added []policy.NumericIdentity) {
 
 	log.Debugf("Iterating over endpoints...")
 
-	for _, ep := range d.endpoints {
-		log.Debugf("Triggering policy update for ep %s", ep.StringID())
-		err := ep.TriggerPolicyUpdates(d)
-		if err != nil {
-			log.Warningf("Error while handling policy updates for endpoint %s: %s\n",
-				ep.StringID(), err)
-			ep.LogStatus(endpoint.Policy, endpoint.Failure, err.Error())
-		} else {
-			ep.LogStatusOK(endpoint.Policy, "Policy regenerated")
-		}
+	var wg sync.WaitGroup
+	for i := range d.endpoints {
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, ep *endpoint.Endpoint) {
+			log.Debugf("Triggering policy update for ep %s", ep.StringID())
+			err := ep.TriggerPolicyUpdates(d)
+			if err != nil {
+				log.Warningf("Error while handling policy updates for endpoint %s: %s\n",
+					ep.StringID(), err)
+				ep.LogStatus(endpoint.Policy, endpoint.Failure, err.Error())
+			} else {
+				ep.LogStatusOK(endpoint.Policy, "Policy regenerated")
+			}
+			wg.Done()
+		}(&wg, d.endpoints[i])
 	}
-
+	wg.Wait()
 	log.Debugf("End")
 }
 
