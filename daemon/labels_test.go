@@ -89,6 +89,9 @@ func (ds *DaemonSuite) SetUpTest(c *C) {
 	c.Assert(err, IsNil)
 	ds.d = d
 	d.kvClient.DeleteTree(common.OperationalPath)
+	// Needs to be less than 1 second otherwise GetCachedMaxLabelID might
+	// not work properly
+	d.EnableKVStoreWatcher(time.Millisecond)
 }
 
 func (ds *DaemonSuite) TearDownTest(c *C) {

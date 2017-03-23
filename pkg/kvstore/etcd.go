@@ -29,6 +29,7 @@ import (
 
 	client "github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
+	"github.com/coreos/etcd/mvcc/mvccpb"
 	ctx "golang.org/x/net/context"
 )
 
@@ -368,8 +369,9 @@ func (e *EtcdClient) GetWatcher(key string, timeSleep time.Duration) <-chan []po
 	ch := make(chan []policy.NumericIdentity, 100)
 	go func() {
 		curSeconds := time.Second
+		lastRevision := int64(0)
 		for {
-			w := <-e.cli.Watch(ctx.Background(), key)
+			w := <-e.cli.Watch(ctx.Background(), key, client.WithRev(lastRevision))
 			if w.Err() != nil {
 				log.Warning("Unable to watch key %s, retrying...", key)
 				time.Sleep(curSeconds)
@@ -379,8 +381,22 @@ func (e *EtcdClient) GetWatcher(key string, timeSleep time.Duration) <-chan []po
 				continue
 			}
 			curSeconds = time.Second
+			lastRevision = w.CompactRevision
 			go func() {
-				ch <- []policy.NumericIdentity{}
+				freeID := uint32(0)
+				maxFreeID := uint32(0)
+				for _, event := range w.Events {
+					log.Debugf("Received new event %+v, maxFreeID %d", event, maxFreeID)
+					if event.Type == mvccpb.PUT &&
+						event.Kv != nil {
+						if err := json.Unmarshal(event.Kv.Value, &freeID); err == nil {
+							if freeID > maxFreeID {
+								maxFreeID = freeID
+							}
+						}
+					}
+				}
+				ch <- []policy.NumericIdentity{policy.NumericIdentity(maxFreeID)}
 			}()
 		}
 	}()

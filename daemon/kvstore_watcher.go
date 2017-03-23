@@ -18,12 +18,16 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/policy"
 )
 
 // EnableKVStoreWatcher watches for kvstore changes in the common.LastFreeIDKeyPath key.
 // Triggers policy updates every time the value of that key is changed.
 func (d *Daemon) EnableKVStoreWatcher(maxSeconds time.Duration) {
 	ch := d.kvClient.GetWatcher(common.LastFreeLabelIDKeyPath, maxSeconds)
+	if maxID, err := d.GetMaxLabelID(); err != nil {
+		d.setCachedMaxLabelID(maxID)
+	}
 	go func() {
 		for {
 			select {
@@ -32,8 +36,24 @@ func (d *Daemon) EnableKVStoreWatcher(maxSeconds time.Duration) {
 					log.Debugf("Watcher for %s closed, reacquiring it", common.LastFreeLabelIDKeyPath)
 					ch = d.kvClient.GetWatcher(common.LastFreeLabelIDKeyPath, maxSeconds)
 				}
+				d.setCachedMaxLabelID(updates[0])
 				d.triggerPolicyUpdates(updates)
 			}
 		}
 	}()
+}
+
+func (d *Daemon) GetCachedMaxLabelID() (policy.NumericIdentity, error) {
+	d.maxCachedLabelIDMU.RLock()
+	defer d.maxCachedLabelIDMU.RUnlock()
+	if d.maxCachedLabelID == 0 {
+		return policy.MinimalNumericIdentity, nil
+	}
+	return d.maxCachedLabelID, nil
+}
+
+func (d *Daemon) setCachedMaxLabelID(id policy.NumericIdentity) {
+	d.maxCachedLabelIDMU.Lock()
+	defer d.maxCachedLabelIDMU.Unlock()
+	d.maxCachedLabelID = id
 }

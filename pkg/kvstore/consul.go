@@ -377,7 +377,11 @@ func (c *ConsulClient) GetWatcher(key string, timeSleep time.Duration) <-chan []
 			curSeconds = time.Second
 			qo.WaitIndex = q.LastIndex
 			go func() {
-				ch <- []policy.NumericIdentity{}
+				maxFreeID := uint32(0)
+				log.Debugf("Received new event %+v, maxFreeID %d", k, maxFreeID)
+				if err := json.Unmarshal(k.Value, &maxFreeID); err == nil {
+					ch <- []policy.NumericIdentity{policy.NumericIdentity(maxFreeID)}
+				}
 			}()
 		}
 	}()
