@@ -304,41 +304,55 @@ func (e *Endpoint) regenerate(owner Owner) error {
 	return nil
 }
 
-// Force regeneration of endpoint programs & policy
-func (e *Endpoint) regenerateLocked(owner Owner) error {
-	err := e.regenerate(owner)
-	if err != nil {
-		e.LogStatus(BPF, Failure, err.Error())
-	} else {
-		e.LogStatusOK(BPF, "Successfully regenerated endpoint program")
+// Regenerate forces the regeneration of endpoint programs & policy
+func (e *Endpoint) Regenerate(owner Owner) <-chan bool {
+	newReq := &Request{
+		ID:           e.ID,
+		MyTurn:       make(chan bool),
+		Done:         make(chan bool),
+		ExternalDone: make(chan bool),
 	}
-
-	return err
-}
-
-// Regenerate forces the regeneration of endpoint programs & policy.
-func (e *Endpoint) Regenerate(owner Owner) error {
-	return e.regenerateLocked(owner)
+	owner.QueueEndpoint(newReq)
+	go func(myTurn <-chan bool, finish chan<- bool, externalFinish chan<- bool) {
+		buildSuccess := true
+		isMyTurn, isMyTurnChanOK := <-myTurn
+		if isMyTurnChanOK && isMyTurn {
+			// FIXME: Do we really need this lock? Maybe to prevent
+			// endpointLeave in the middle of a build?
+			e.bpfPogramMU.Lock()
+			defer e.bpfPogramMU.Unlock()
+			err := e.regenerate(owner)
+			if err != nil {
+				buildSuccess = false
+				e.LogStatus(BPF, Failure, err.Error())
+			} else {
+				buildSuccess = true
+				e.LogStatusOK(BPF, "Successfully regenerated endpoint program")
+			}
+			finish <- buildSuccess
+		} else {
+			buildSuccess = false
+			log.Debugf("My request was canceled because I'm already in line [%d]", e.ID)
+		}
+		// The external listener can ignore the channel so we need to
+		// make sure we don't block
+		select {
+		case externalFinish <- buildSuccess:
+		default:
+		}
+		log.Debugf("I'm done %d", e.ID)
+	}(newReq.MyTurn, newReq.Done, newReq.ExternalDone)
+	return newReq.ExternalDone
 }
 
 // TriggerPolicyUpdates indicates that a policy change is likely to
 // affect this endpoint. Will update all required endpoint configuration and
 // state to reflect new policy and regenerate programs if required.
-func (e *Endpoint) TriggerPolicyUpdates(owner Owner) error {
+func (e *Endpoint) TriggerPolicyUpdates(owner Owner) (bool, error) {
 	if e.Consumable == nil {
-		return nil
+		return false, nil
 	}
-
-	optionChanges, err := e.regeneratePolicy(owner)
-	if err != nil {
-		return err
-	}
-
-	if optionChanges {
-		return e.regenerateLocked(owner)
-	}
-
-	return nil
+	return e.regeneratePolicy(owner)
 }
 
 func (e *Endpoint) SetIdentity(owner Owner, id *policy.Identity) {

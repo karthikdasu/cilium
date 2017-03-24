@@ -317,9 +317,7 @@ func (d *Daemon) handleCreateContainer(id string, retry bool) {
 		d.containers[ep.DockerID] = &containerCopy
 
 		d.setEndpointIdentity(ep, containerCopy.ID, dockerEpID, identity)
-		if err := ep.Regenerate(d); err != nil {
-			// FIXME: Disconnect endpoint?
-		}
+		ep.Regenerate(d)
 
 		d.endpointsMU.Unlock()
 		d.containersMU.Unlock()

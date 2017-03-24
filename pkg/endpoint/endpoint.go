@@ -130,10 +130,12 @@ func init() {
 }
 
 const (
-	StateCreating           = string(models.EndpointStateCreating)
-	StateDisconnected       = string(models.EndpointStateDisconnected)
-	StateWaitingForIdentity = string(models.EndpointStateWaitingForIdentity)
-	StateReady              = string(models.EndpointStateReady)
+	StateCreating               = string(models.EndpointStateCreating)
+	StateDisconnected           = string(models.EndpointStateDisconnected)
+	StateWaitingForIdentity     = string(models.EndpointStateWaitingForIdentity)
+	StateReady                  = string(models.EndpointStateReady)
+	StateWaitingForRegeneration = string(models.EndpointStateWaitingForRegeneration)
+	StateRegenerating           = string(models.EndpointStateRegenerating)
 )
 
 // Endpoint contains all the details for a particular LXC and the host interface to where
@@ -156,7 +158,8 @@ type Endpoint struct {
 	PolicyMap        *policymap.PolicyMap
 	Opts             *option.BoolOptions // Endpoint bpf options.
 	Status           *EndpointStatus
-	State            string
+	State            string       `json:"-"`
+	bpfPogramMU      sync.RWMutex // Mutex used for program BPF regenerations.
 }
 
 func NewEndpointFromChangeModel(base *models.EndpointChangeRequest) (*Endpoint, error) {
@@ -474,7 +477,7 @@ func (e *Endpoint) Allows(id policy.NumericIdentity) bool {
 }
 
 // String returns endpoint on a JSON format.
-func (e Endpoint) String() string {
+func (e *Endpoint) String() string {
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		return err.Error()
@@ -512,14 +515,14 @@ func (e *Endpoint) SetDefaultOpts(opts *option.BoolOptions) {
 type orderEndpoint func(e1, e2 *Endpoint) bool
 
 // OrderEndpointAsc orders the slice of Endpoint in ascending ID order.
-func OrderEndpointAsc(eps []Endpoint) {
+func OrderEndpointAsc(eps []*Endpoint) {
 	ascPriority := func(e1, e2 *Endpoint) bool {
 		return e1.ID < e2.ID
 	}
 	orderEndpoint(ascPriority).sort(eps)
 }
 
-func (by orderEndpoint) sort(eps []Endpoint) {
+func (by orderEndpoint) sort(eps []*Endpoint) {
 	dS := &epSorter{
 		eps: eps,
 		by:  by,
@@ -528,7 +531,7 @@ func (by orderEndpoint) sort(eps []Endpoint) {
 }
 
 type epSorter struct {
-	eps []Endpoint
+	eps []*Endpoint
 	by  func(e1, e2 *Endpoint) bool
 }
 
@@ -545,7 +548,9 @@ func (epS *epSorter) Less(i, j int) bool {
 }
 
 // Base64 returns the endpoint in a base64 format.
-func (e Endpoint) Base64() (string, error) {
+func (e *Endpoint) Base64() (string, error) {
+	// FIXME FIXME FIXME data race condition in e.State
+	// suggestion: internal mutex for all endpoint operations?
 	jsonBytes, err := json.Marshal(e)
 	if err != nil {
 		return "", err
@@ -667,14 +672,13 @@ func (e *Endpoint) Update(owner Owner, opts models.ConfigurationMap) error {
 	}
 
 	// FIXME: restore previous configuration on failure
-	if err := e.regenerateLocked(owner); err != nil {
-		return UpdateCompilationError{err.Error()}
-	}
+	e.Regenerate(owner)
 
 	return nil
 }
 
 func (e *Endpoint) Leave(owner Owner) {
+	owner.RemoveFromEndpointQueue(e.ID)
 	if c := e.Consumable; c != nil && c.L4Policy != nil {
 		// Passing a new map of nil will purge all redirects
 		e.cleanUnusedRedirects(owner, c.L4Policy.Ingress, nil)
@@ -685,6 +689,8 @@ func (e *Endpoint) Leave(owner Owner) {
 }
 
 func (e *Endpoint) RemoveDirectory() {
+	e.bpfPogramMU.Lock()
+	defer e.bpfPogramMU.Unlock()
 	os.RemoveAll(e.DirectoryPath())
 }
 
@@ -702,5 +708,6 @@ func (e *Endpoint) RegenerateIfReady(owner Owner) error {
 		return nil
 	}
 
-	return e.Regenerate(owner)
+	e.Regenerate(owner)
+	return nil
 }

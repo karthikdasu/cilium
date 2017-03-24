@@ -205,9 +205,7 @@ func writeGeneve(prefix string, e *Endpoint) ([]byte, error) {
 	return rawData, nil
 }
 
-func (e *Endpoint) runInit(owner Owner, prefix string) error {
-	libdir := owner.GetBpfDir()
-	rundir := owner.GetRuntimeDir()
+func (e *Endpoint) runInit(libdir, rundir, prefix string) error {
 	args := []string{libdir, rundir, prefix, e.IfName}
 
 	out, err := exec.Command(filepath.Join(libdir, "join_ep.sh"), args...).CombinedOutput()
@@ -264,7 +262,9 @@ func (e *Endpoint) regenerateBPF(owner Owner, prefix string) error {
 		e.Consumable.AddMap(e.PolicyMap)
 	}
 
-	if err = e.runInit(owner, prefix); err != nil {
+	libdir := owner.GetBpfDir()
+	rundir := owner.GetRuntimeDir()
+	if err = e.runInit(libdir, rundir, prefix); err != nil {
 		return err
 	}
 

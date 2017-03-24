@@ -68,8 +68,7 @@ func (d *Daemon) SyncState(dir string, clean bool) error {
 			d.conf.OptsMU.RUnlock()
 		}
 
-		if err := ep.Regenerate(d); err != nil {
-			log.Warningf("Unable to restore endpoint %+v: %s", ep, err)
+		if buildSuccess := <-ep.Regenerate(d); !buildSuccess {
 			continue
 		}
 
@@ -94,8 +93,7 @@ func (d *Daemon) SyncState(dir string, clean bool) error {
 		}
 
 		log.Infof("EP %d's IP addresses successfully reallocated", ep.ID)
-		err = ep.Regenerate(d)
-		if err != nil {
+		if buildSuccess := <-ep.Regenerate(d); !buildSuccess {
 			log.Warningf("Failed while regenerating endpoint %d: %s", ep.ID, err)
 		} else {
 			if ep.SecLabel != nil {

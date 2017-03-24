@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,6 +81,9 @@ type Daemon struct {
 	loopbackIPv4       net.IP
 	maxCachedLabelID   policy.NumericIdentity
 	maxCachedLabelIDMU sync.RWMutex
+	bpfQueueMU         sync.Mutex
+	buildEndpointChan  chan *endpoint.Request
+	uniqueID           map[uint16]bool
 	l7Proxy            *proxy.Proxy
 }
 
@@ -93,6 +97,72 @@ func (d *Daemon) WriteEndpoint(e *endpoint.Endpoint) error {
 	}
 
 	return nil
+}
+
+func (d *Daemon) QueueEndpoint(req *endpoint.Request) {
+	go func(req *endpoint.Request) {
+		d.bpfQueueMU.Lock()
+		defer d.bpfQueueMU.Unlock()
+		// We are skipping new requests, but only if the endpoint has not
+		// started its build process, since the endpoint is already in queue
+		if isBuilding, exists := d.uniqueID[req.ID]; !isBuilding && exists {
+			req.MyTurn <- false
+		} else {
+			// Mark endpoint in not building state and send it to
+			// the building queue
+			d.uniqueID[req.ID] = false
+			d.endpointsMU.Lock()
+			ep := d.endpoints[req.ID]
+			if ep != nil {
+				ep.State = endpoint.StateWaitingForRegeneration
+			}
+			d.endpointsMU.Unlock()
+			d.buildEndpointChan <- req
+		}
+
+	}(req)
+}
+
+func (d *Daemon) RemoveFromEndpointQueue(epID uint16) {
+	d.bpfQueueMU.Lock()
+	defer d.bpfQueueMU.Unlock()
+	delete(d.uniqueID, epID)
+}
+
+func (d *Daemon) Processor() {
+	// Create the same amount of worker threads as there are CPUs
+	for w := 0; w < runtime.NumCPU(); w++ {
+		go func() {
+			for e := range d.buildEndpointChan {
+				d.bpfQueueMU.Lock()
+				// Set the endpoint is building
+				d.uniqueID[e.ID] = true
+				e.MyTurn <- true
+				d.bpfQueueMU.Unlock()
+				d.endpointsMU.Lock()
+				ep := d.endpoints[e.ID]
+				if ep != nil {
+					ep.State = endpoint.StateRegenerating
+				}
+				d.endpointsMU.Unlock()
+				// Wait for the endpoint to build
+				<-e.Done
+				d.bpfQueueMU.Lock()
+				if isBuilding := d.uniqueID[e.ID]; isBuilding {
+					// Delete the endpoint from the queue
+					// only if was marked as isBuilding
+					delete(d.uniqueID, e.ID)
+					d.endpointsMU.Lock()
+					ep := d.endpoints[e.ID]
+					if ep != nil {
+						ep.State = endpoint.StateReady
+					}
+					d.endpointsMU.Unlock()
+				}
+				d.bpfQueueMU.Unlock()
+			}
+		}()
+	}
 }
 
 func (d *Daemon) GetRuntimeDir() string {
@@ -489,7 +559,11 @@ func NewDaemon(c *Config) (*Daemon, error) {
 		consumableCache:   policy.NewConsumableCache(),
 		policy:            policy.Tree{},
 		ignoredContainers: make(map[string]int),
+		buildEndpointChan: make(chan *endpoint.Request, common.EndpointsPerHost),
+		uniqueID:          map[uint16]bool{},
 	}
+
+	d.Processor()
 
 	d.listenForCiliumEvents()
 

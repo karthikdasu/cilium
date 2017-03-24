@@ -1045,6 +1045,8 @@ func init() {
         "creating",
         "disconnected",
         "waiting-for-identity",
+        "waiting-for-regeneration",
+        "regenerating",
         "not-ready",
         "ready"
       ]

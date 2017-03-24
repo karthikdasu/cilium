@@ -640,7 +640,7 @@ func (h *putEndpointIDLabels) Handle(params PutEndpointIDLabelsParams) middlewar
 
 	d.setEndpointIdentity(ep, c.ID, "", identity)
 
-	if err := ep.Regenerate(d); err != nil {
+	if buildSuccess := <-ep.Regenerate(d); !buildSuccess {
 		return apierror.Error(PutEndpointIDLabelsUpdateFailedCode, err)
 	}
 
