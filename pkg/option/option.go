@@ -145,6 +145,10 @@ func (bo *BoolOptions) IsEnabled(key string) bool {
 	return exists && set
 }
 
+func (bo *BoolOptions) IsDisabled(key string) bool {
+	return !bo.IsEnabled(key)
+}
+
 func (bo *BoolOptions) Set(key string, value bool) {
 	bo.Opts[key] = value
 }
